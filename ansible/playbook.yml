@@ -1,0 +1,117 @@
+- name: Deploy Database
+  hosts: db
+
+  tasks:
+    - name: install docker
+      become: yes
+      yum:
+        name: docker
+        state: present
+
+    # Install python-pip so we can install docker-py.
+    # docker-py is necessary for ansible docker to run
+    - name: install python-pip
+      become: yes
+      yum:
+        name: python-pip
+        state: present
+
+    - name: install docker-py
+      become: yes
+      pip:
+        name: docker-py
+
+    # Start docker service
+    - name: start docker service
+      become: yes
+      systemd:
+        state: started
+        name: docker
+        enabled: yes
+
+    - name: enable docker socket
+      become: yes
+      shell: 'systemctl enable docker.socket'
+
+    # Create mongodb container
+    - name: create mongoDB container
+      become: yes
+      docker_container:
+        name: db
+        image: mongo:4.0
+        command:
+          - "--bind_ip 0.0.0.0"
+        volumes:
+          - "mongo_log:/var/log/mongodb/mongodb.log"
+          - "mongo_data:/var/lib/mongodb"
+        ports:
+          - "27017:27017"
+
+    - name: Create Systemd Unit File as docker-db.service
+      become: yes
+      template: src=container.tpl dest=/etc/systemd/system/docker-db.service
+
+    - name: reload systemd daemon
+      become: yes
+      command: systemctl daemon-reload
+
+    - name: Start & Enable docker-db service
+      become: yes
+      service:
+        name: docker-db
+        state: started
+        enabled: yes
+
+- name: Deploy Application
+  hosts: web
+  vars:
+    app_path: /home/ec2-user/src/
+  vars_files:
+    - "{{ playbook_dir }}/vars/db.yml"
+  tasks:
+    - name: Run the equivalent of "yum update" as a separate step
+      yum:
+        update_cache: yes
+
+    - name: Setup repository for NodeJS
+      shell: 'curl -sL https://rpm.nodesource.com/setup_14.x | sudo bash -'
+
+    - name: Install NodeJS
+      become: yes
+      yum:
+        name: nodejs
+        state: present
+
+    - name: Copy application folder to EC2
+      become: yes
+      synchronize:
+        src: "{{ playbook_dir }}/../src"
+        dest: ./
+
+    - name: Instal required dependencies based on package.json
+      become: yes
+      npm:
+        path: ./src
+
+    - name: Add system conf to run application with systemd
+      become: yes
+      template:
+        dest: /etc/systemd/system/node-app.service
+        src: service.tpl
+
+    - name: reload systemd daemon
+      become: yes
+      command: systemctl daemon-reload
+
+    - name: Start & Enable node-app service
+      become: yes
+      service:
+        name: node-app
+        state: started
+        enabled: yes
+
+    - name: Copy generated artefact to the remote server
+      become: yes
+      copy:
+        src: simpletodoapp-1.0.1.tgz
+        dest: ./
